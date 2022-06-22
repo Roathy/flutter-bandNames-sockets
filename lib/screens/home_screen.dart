@@ -1,9 +1,12 @@
 import 'dart:io';
+import 'package:provider/provider.dart';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:pie_chart/pie_chart.dart';
 
 import '../models/band_model.dart';
+import '../services/socket_service.dart';
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -11,46 +14,90 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  List<Band> bands = [
-    Band(id: '1', name: 'mago de oz', votes: 666),
-    Band(id: '2', name: 'nightwish', votes: 55),
-    Band(id: '3', name: 'falling in reverse', votes: 222),
-    Band(id: '4', name: 'falling in reverse', votes: 333),
-    Band(id: '5', name: 'falling in reverse', votes: 444),
-  ];
+  List<Band> bands = [];
+
+  @override
+  void initState() {
+    final socketService = Provider.of<SocketService>(context, listen: false);
+    socketService.socket.on('current-bands', _currentBandsHandler);
+
+    super.initState();
+  }
+
+  _currentBandsHandler(dynamic payload) {
+    bands = (payload as List).map((band) => Band.fromMap(band)).toList();
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    final socketService = Provider.of<SocketService>(context, listen: false);
+    socketService.socket.off('current-bands');
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final socketService = Provider.of<SocketService>(
+      context,
+    );
+    Size size = MediaQuery.of(context).size;
     return Scaffold(
       appBar: AppBar(
-          backgroundColor: Colors.black,
-          centerTitle: true,
-          title: Text(
-            'Band Names',
-            style: TextStyle(color: Colors.white),
-          )),
-      body: ListView.builder(
-        itemCount: bands.length,
-        itemBuilder: (context, int index) => _bandTile(bands[index]),
+        backgroundColor: Colors.black,
+        centerTitle: true,
+        title: const Text(
+          'Band Names',
+          style: TextStyle(color: Colors.white),
+        ),
+        actions: [
+          Container(
+              padding: EdgeInsets.only(right: 15),
+              child: socketService.serverStatus == ServerStatus.Online
+                  ? Icon(
+                      Icons.online_prediction,
+                      color: Colors.green,
+                    )
+                  : Icon(
+                      Icons.offline_bolt,
+                      color: Colors.red,
+                    ))
+        ],
       ),
+      body: Column(children: [
+        Container(
+          padding: EdgeInsets.symmetric(vertical: 21),
+          margin: EdgeInsets.symmetric(vertical: 21),
+          child: _votesGraph(),
+        ),
+        Container(
+          width: double.infinity,
+          height: size.height * 0.6,
+          child: ListView.builder(
+            itemCount: bands.length,
+            itemBuilder: (context, int index) => _bandTile(bands[index]),
+          ),
+        ),
+      ]),
       floatingActionButton: FloatingActionButton(
-        onPressed: readNewBand,
+        onPressed: inputNewBand,
         elevation: 1,
-        child: Icon(Icons.add),
+        child: const Icon(Icons.add),
       ),
     );
   }
 
   Widget _bandTile(Band band) {
+    final socketService = Provider.of<SocketService>(context, listen: false);
     return Dismissible(
       key: Key(band.id),
       direction: DismissDirection.startToEnd,
-      onDismissed: (direction){
-        //TODO:delete from server
+      onDismissed: (direction) {
+        socketService.socket.emit('delete-band', {'id': band.id});
       },
       background: Container(
         alignment: Alignment.centerLeft,
-        padding: EdgeInsets.only(left: 9),
+        padding: const EdgeInsets.only(left: 9),
         color: Colors.red,
         child: Row(
           children: [
@@ -63,9 +110,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             Text(
               'Delete band',
-              style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18),
+              style: TextStyle(color: Colors.white, fontSize: 18),
             ),
           ],
         ),
@@ -82,34 +127,35 @@ class _HomeScreenState extends State<HomeScreen> {
           style: TextStyle(fontSize: 21),
         ),
         onTap: () {
-          print(band.name);
+          socketService.socket.emit('vote-for-band', {"id": band.id});
         },
       ),
     );
   }
 
-  readNewBand() {
+  inputNewBand() {
     final textController = TextEditingController();
+    final socketService = Provider.of<SocketService>(context, listen: false);
 
     if (Platform.isAndroid) {
       return showDialog(
           context: context,
-          builder: (context) {
-            return AlertDialog(
-              title: Text('New band name'),
-              content: TextField(controller: textController),
-              actions: [
-                MaterialButton(
-                  onPressed: () {
-                    addNewBand(textController.text);
-                  },
-                  child: Text('Add'),
-                  elevation: 6,
-                  textColor: Colors.blue,
-                )
-              ],
-            );
-          });
+          builder: (context) => AlertDialog(
+                title: Text('New band name'),
+                content: TextField(controller: textController),
+                actions: [
+                  MaterialButton(
+                    onPressed: () {
+                      socketService.socket
+                          .emit('add-new-band', {'name': textController.text});
+                      Navigator.pop(context);
+                    },
+                    child: Text('Add'),
+                    elevation: 6,
+                    textColor: Colors.blue,
+                  )
+                ],
+              ));
     }
 
     showCupertinoDialog(
@@ -125,7 +171,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 isDefaultAction: true,
                 child: Text('Add'),
                 onPressed: () {
-                  addNewBand(textController.text);
+                  socketService.socket
+                      .emit('add-new-band', {'name': textController.text});
+                  Navigator.pop(context);
                 },
               ),
               CupertinoDialogAction(
@@ -140,15 +188,50 @@ class _HomeScreenState extends State<HomeScreen> {
         });
   }
 
-  addNewBand(String bandName) {
-    print(bandName);
-    if (bandName.length > 1) {
-      bands.add(Band(id: DateTime.now().toString(), name: bandName, votes: 0));
-      setState(() {});
-    }
+  Widget _votesGraph() {
+    Map<String, double> dataMap = {};
+    List<Color> colorList = [
+      Color(0xffff6961),
+      Color(0xff77dd77),
+      Color(0xfffdfd96),
+      Color(0xff84b6f4),
+      Color(0xfffdcae1),
+    ];
 
-    Navigator.pop(context);
+    bands.forEach(
+      (band) => {dataMap.putIfAbsent(band.name, () => band.votes.toDouble())},
+    );
+
+    return PieChart(
+      dataMap: dataMap,
+      animationDuration: Duration(milliseconds: 800),
+      chartLegendSpacing: 33,
+      
+      chartRadius: MediaQuery.of(context).size.width / 3.2,
+      colorList: colorList,
+      initialAngleInDegree: 0,
+      chartType: ChartType.ring,
+      ringStrokeWidth: 32,
+
+      //centerText: "HYBRID",
+      legendOptions: LegendOptions(
+        showLegendsInRow: false,
+        legendPosition: LegendPosition.right,
+        showLegends: true,
+        //legendShape: _BoxShape.circle,
+        legendTextStyle: TextStyle(
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      chartValuesOptions: ChartValuesOptions(
+        showChartValueBackground: false,
+        showChartValues: true,
+        showChartValuesInPercentage: false,
+        showChartValuesOutside: false,
+        decimalPlaces: 0,
+      ),
+      // gradientList: ---To add gradient colors---
+      // emptyColorGradient: ---Empty Color gradient---
+    );
   }
 }
-
-//votes: bands.contains(bandName) ? votes: 0 :

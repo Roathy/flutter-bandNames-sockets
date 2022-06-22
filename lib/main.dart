@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import './services/socket_service.dart';
 
 import './screens/home_screen.dart';
+import './screens/status_screen.dart';
 
-void main() => runApp(MyApp());
+void main() => runApp(MultiProvider(providers: [
+      ChangeNotifierProvider(
+        create: (BuildContext context) => SocketService(),
+      )
+    ], child: MyApp()));
 
 class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -15,6 +21,7 @@ class MyApp extends StatelessWidget {
       initialRoute: 'home-screen',
       routes: {
         'home-screen': (_) => HomeScreen(),
+        'status-screen': (_) => StatusScreen(),
       },
     );
   }
